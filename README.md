@@ -7,6 +7,10 @@ The most useful code is located in the `minigpt4` folder, specifically in the `d
 This iteration supports training Emotion-LLaMA end-to-end (in addition to using it as a feature extractor), though experiments with end-to-end training were unsuccessful.
 For only feature extraction follow the following guideline:
 
+## Pipeline Overview
+
+![Emotion-LLaMA Pipeline](images/emotion_llama_pipeline.png)
+
 ## 🔍 Extracting Emotion-LLaMA Features from Frames
 
 
