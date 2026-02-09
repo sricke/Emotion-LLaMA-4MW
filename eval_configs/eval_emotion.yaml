@@ -5,8 +5,8 @@ model:
   end_sym: "</s>"
   low_resource: False
   prompt_template: '[INST] {} [/INST]'
-  llama_model: "/home/user/project/Emotion-LLaMA/checkpoints/Llama-2-7b-chat-hf"
-  ckpt: "/home/user/project/Emotion-LLaMA/checkpoints/save_checkpoint/stage2/checkpoint_best.pth"
+  llama_model: "meta-llama/Llama-2-7b-chat-hf"
+  ckpt: "/home/ricke/emotion-llama/rep/checkpoints/save_checkpoint/emotion_llama.pth"
   lora_r: 64
   lora_alpha: 16
 
@@ -23,22 +23,12 @@ datasets:
     sample_ratio: 30
 
 evaluation_datasets:
-  feature_face_caption:
-    eval_file_path: /home/user/selected_face/face_emotion/relative_test3_NCEV.txt # MER2023
 
-    img_path: /home/czb/big_space/datasets/Emotion/MER2023/video
-
-    # eval_file_path: /home/user/selected_face/DFEW/reltive_DFEW_set_1_test.txt
-    # img_path: /home/user/selected_face/DFEW/images     
-
+  hcmw_caption:
+    eval_file_path: /home/ricke/emotion-llama/feature_extract/labels_HCMW.txt  # Update this path
+    img_path: /home/ricke/emotion-llama/feature_extract/clips_nn    
     max_new_tokens: 500
     batch_size: 1
-
-  mer2024_caption:
-    eval_file_path: /home/czb/big_space/datasets/Emotion/MER2024/MER2024-noise_NCE.txt # MER2024
-    img_path: /home/czb/big_space/datasets/Emotion/MER2024/video-unlabeled-with-test2noise
-    max_new_tokens: 500
-    batch_size: 1  
 
 run:
   task: image_text_pretrain

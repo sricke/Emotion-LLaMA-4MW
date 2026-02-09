@@ -12,6 +12,7 @@ import os
 import time
 from pathlib import Path
 
+import mlflow
 import torch
 import torch.distributed as dist
 import webdataset as wds
@@ -32,6 +33,7 @@ from minigpt4.datasets.datasets.dataloader_utils import (
 )
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
+from minigpt4.common.logger import MetricLogger, SmoothedValue, init_mlflow, end_mlflow_run
 
 
 @registry.register_runner("runner_base")
@@ -58,7 +60,8 @@ class RunnerBase:
         self._scaler = None
         self._dataloaders = None
         self._lr_sched = None
-
+        self.best_epoch = None
+        self.best_val_loss = None
         self.start_epoch = 0
 
         # self.setup_seeds()
@@ -210,7 +213,7 @@ class RunnerBase:
                 "dataset_ratios not specified, datasets will be concatenated (map-style datasets) or chained (webdataset.DataPipeline)."
             )
 
-            batch_sizes = {dataset_name: getattr(self.config.datasets_cfg, dataset_name).batch_size
+            batch_sizes = {dataset_name: self.config.datasets_cfg.hcmw_caption.batch_size
                            for dataset_name in self.datasets.keys()}
             datasets, batch_sizes = reorg_datasets_by_split(self.datasets, batch_sizes)
             self.datasets = datasets
@@ -343,6 +346,7 @@ class RunnerBase:
 
     @property
     def train_loader(self):
+
         train_dataloader = self.dataloaders["train"]
 
         return train_dataloader
@@ -352,7 +356,7 @@ class RunnerBase:
 
         output_dir = lib_root / self.config.run_cfg.output_dir / self.job_id
         # output_dir = lib_root / self.config.run_cfg.output_dir
-        result_dir = output_dir / "result"
+        result_dir = output_dir  / "result"
 
         output_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -363,22 +367,25 @@ class RunnerBase:
         self.result_dir = result_dir
         self.output_dir = output_dir
 
-    def train(self):
+    def train(self, fold, experiment_name):
         start_time = time.time()
-        best_agg_metric = 0
-        best_epoch = 0
-
-        self.log_config()
+        self.best_val_loss = float('inf')
+        self.best_epoch = 0
 
         # resume from checkpoint if specified
         if not self.evaluate_only and self.resume_ckpt_path is not None:
             self._load_checkpoint(self.resume_ckpt_path)
+        self.initialize_logger()
+        self.initialize_mlflow(experiment_name=experiment_name+f"_fold_{fold}", tags={"fold": fold})
+        output_path = self.log_config()
+        self.log_config_to_mlflow(output_path)
 
         for cur_epoch in range(self.start_epoch, self.max_epoch):
+            self.set_mlflow_step(cur_epoch)
             # training phase
             if not self.evaluate_only:
                 logging.info("Start training")
-                train_stats = self.train_epoch(cur_epoch)
+                train_stats = self.train_epoch(cur_epoch, fold)
                 self.log_stats(split_name="train", stats=train_stats)
 
             # evaluation phase
@@ -386,61 +393,120 @@ class RunnerBase:
                 for split_name in self.valid_splits:
                     logging.info("Evaluating on {}.".format(split_name))
 
-                    val_log = self.eval_epoch(
-                        split_name=split_name, cur_epoch=cur_epoch
+                    val_results = self.eval_epoch(
+                        split_name=split_name, cur_epoch=cur_epoch, fold=fold
                     )
+                    
+                    val_log = val_results['metrics']
+  
                     if val_log is not None:
                         if is_main_process():
+                            
                             assert (
-                                "agg_metrics" in val_log
-                            ), "No agg_metrics found in validation log."
-
-                            agg_metrics = val_log["agg_metrics"]
-                            if agg_metrics > best_agg_metric and split_name == "val":
-                                best_epoch, best_agg_metric = cur_epoch, agg_metrics
-
-                                self._save_checkpoint(cur_epoch, is_best=True)
-
-                            val_log.update({"best_epoch": best_epoch})
+                                "val_loss" in val_log
+                            ), "No val_loss found in validation log."
+ 
+                            val_loss = float(val_log["val_loss"])
+                            if val_loss < self.best_val_loss and split_name == "eval":
+                                self.best_epoch, self.best_val_loss = cur_epoch, val_loss
+                                logging.info(f"New best validation loss {self.best_val_loss} at epoch {self.best_epoch}")
+                                self._save_checkpoint(cur_epoch, fold, is_best=True)
+                            #val_log.update({"best_epoch": best_epoch})
                             self.log_stats(val_log, split_name)
+                            self.log_metrics_to_mlflow(step=cur_epoch, global_avg=True)
 
             else:
                 # if no validation split is provided, we just save the checkpoint at the end of each epoch.
                 if not self.evaluate_only:
                     self._save_checkpoint(cur_epoch, is_best=False)
-
+    
             if self.evaluate_only:
                 break
 
             if self.config.run_cfg.distributed:
                 dist.barrier()
+            self.logger.reset_meters()
 
         # testing phase
         test_epoch = "best" if len(self.valid_splits) > 0 else cur_epoch
-        self.evaluate(cur_epoch=test_epoch, skip_reload=self.evaluate_only)
+        results = self.evaluate(cur_epoch=test_epoch, skip_reload=False, fold=fold)
+        for split_name, result in results.items():
+            logging.info(f"Best Evaluation results on {split_name} - fold {fold}")
+            logging.info(json.dumps(result, indent=4))
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         logging.info("Training time {}".format(total_time_str))
-
-    def evaluate(self, cur_epoch="best", skip_reload=False):
-        test_logs = dict()
-
-        if len(self.test_splits) > 0:
-            for split_name in self.test_splits:
-                test_logs[split_name] = self.eval_epoch(
-                    split_name=split_name, cur_epoch=cur_epoch, skip_reload=skip_reload
+        
+        self.end_mlflow()
+        self.cleanup_model()
+        
+    def cleanup_model(self):
+        """Remove model from GPU and free memory."""
+        if self._wrapped_model is not None:
+            if self.use_distributed:
+                # Unwrap DDP model
+                self._wrapped_model = self._wrapped_model.module
+            self._wrapped_model = self._wrapped_model.cpu()
+            del self._wrapped_model
+            self._wrapped_model = None
+        
+        if self._model is not None:
+            self._model = self._model.cpu()
+            del self._model
+            self._model = None
+        
+        # Clear GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+    @main_process
+    def save_prediction_results(self, video_ids, predictions, labels, split_name, fold):
+        output_dir = os.path.join(self.output_dir, f'fold_{fold}')
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, f"{split_name}_prediction_{self.best_epoch}_{self.best_val_loss}.txt")
+        with open(save_path, "w") as f:
+            f.write(f"video_id\tprediction\tlabel\n")
+            for i in range(len(predictions)):
+                f.write(f"{video_ids[i]}\t{predictions[i]}\t{labels[i]}\n")
+                
+        self.logger.log_artifact_to_mlflow(save_path)
+         
+    @main_process
+    def save_metrics_results(self, metrics, split_name, fold):
+        output_dir = os.path.join(self.output_dir, f'fold_{fold}')
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, f"{split_name}_metrics_{self.best_epoch}_{self.best_val_loss}.txt")
+        with open(save_path, "w") as f:
+            f.write(f"metric\tvalue\n")
+            for metric, value in metrics.items():
+                f.write(f"{metric}\t{value}\n")
+                
+        self.logger.log_artifact_to_mlflow(save_path)
+    
+        
+    def evaluate(self, cur_epoch="best", skip_reload=False, fold=None):
+        results = dict()
+        if len(self.valid_splits) > 0:
+            for split_name in self.valid_splits:
+                split_results = self.eval_epoch(
+                    split_name=split_name, cur_epoch=cur_epoch, skip_reload=skip_reload, fold=fold
                 )
+                results[split_name] = split_results
+                self.save_prediction_results(split_results['video_ids'], split_results['predictions'], split_results['labels'], split_name, fold)
+                self.save_metrics_results(split_results['metrics'], split_name, fold)
+            return results
 
-            return test_logs
-
-    def train_epoch(self, epoch):
+    def train_epoch(self, epoch, fold):
         # train
         self.model.train()
 
         return self.task.train_epoch(
             epoch=epoch,
+            fold=fold,
             model=self.model,
+            metric_logger=self.logger,
             data_loader=self.train_loader,
             optimizer=self.optimizer,
             scaler=self.scaler,
@@ -451,7 +517,7 @@ class RunnerBase:
         )
 
     @torch.no_grad()
-    def eval_epoch(self, split_name, cur_epoch, skip_reload=False):
+    def eval_epoch(self, split_name, cur_epoch, fold, skip_reload=False):
         """
         Evaluate the model on a given split.
 
@@ -469,21 +535,22 @@ class RunnerBase:
         # TODO consider moving to model.before_evaluation()
         model = self.unwrap_dist_model(self.model)
         if not skip_reload and cur_epoch == "best":
-            model = self._reload_best_model(model)
+            logging.info("Reloading best model")
+            model = self._reload_best_model(model, fold)
         model.eval()
 
         self.task.before_evaluation(
             model=model,
             dataset=self.datasets[split_name],
         )
-        results = self.task.evaluation(model, data_loader)
-
-        if results is not None:
+        results = self.task.evaluation(model, data_loader, metric_logger=self.logger)
+        return results
+        """if results is not None:
             return self.task.after_evaluation(
                 val_result=results,
                 split_name=split_name,
                 epoch=cur_epoch,
-            )
+            )"""
 
     def unwrap_dist_model(self, model):
         if self.use_distributed:
@@ -506,6 +573,7 @@ class RunnerBase:
 
         def _create_loader(dataset, num_workers, bsz, is_train, collate_fn):
             # create a single dataloader for each split
+
             if isinstance(dataset, ChainDataset) or isinstance(
                 dataset, wds.DataPipeline
             ):
@@ -521,7 +589,6 @@ class RunnerBase:
                 )
             else:
                 # map-style dataset are concatenated together
-                # setup distributed sampler
 
                 if self.use_distributed:
                     sampler = DistributedSampler(
@@ -546,10 +613,11 @@ class RunnerBase:
                     collate_fn=collate_fn,
                     drop_last=True if is_train else False,
                 )
+     
                 loader = PrefetchLoader(loader)
-
-                if is_train:
-                    loader = IterLoader(loader, use_distributed=self.use_distributed)
+    
+                #if is_train:
+                loader = IterLoader(loader, use_distributed=self.use_distributed)
 
             return loader
 
@@ -561,10 +629,10 @@ class RunnerBase:
             if isinstance(dataset, list) or isinstance(dataset, tuple):
                 if hasattr(dataset[0], 'sample_ratio') and dataset_ratios is None:
                     dataset_ratios = [d.sample_ratio for d in dataset]
+
                 loader = MultiIterLoader(
                     loaders=[
-                        _create_loader(d, num_workers, bsz[i], is_train, collate_fn[i])
-                        for i, d in enumerate(dataset)
+                        _create_loader(d, num_workers, bsz[i], is_train, collate_fn[i]) for i, d in enumerate(dataset)
                     ],
                     ratios=dataset_ratios,
                 )
@@ -572,11 +640,11 @@ class RunnerBase:
                 loader = _create_loader(dataset, num_workers, bsz, is_train, collate_fn)
 
             loaders.append(loader)
-
         return loaders
 
+
     @main_process
-    def _save_checkpoint(self, cur_epoch, is_best=False):
+    def _save_checkpoint(self, cur_epoch, fold, is_best=False):
         """
         Save the checkpoint at the current epoch.
         """
@@ -598,18 +666,20 @@ class RunnerBase:
             "scaler": self.scaler.state_dict() if self.scaler else None,
             "epoch": cur_epoch,
         }
+        output_dir = os.path.join(self.output_dir, f'fold_{fold}')
+        os.makedirs(output_dir, exist_ok=True)
         save_to = os.path.join(
-            self.output_dir,
+            output_dir,
             "checkpoint_{}.pth".format("best" if is_best else cur_epoch),
         )
         logging.info("Saving checkpoint at epoch {} to {}.".format(cur_epoch, save_to))
         torch.save(save_obj, save_to)
 
-    def _reload_best_model(self, model):
+    def _reload_best_model(self, model, fold):
         """
         Load the best checkpoint for evaluation.
         """
-        checkpoint_path = os.path.join(self.output_dir, "checkpoint_best.pth")
+        checkpoint_path = os.path.join(self.output_dir, f'fold_{fold}', "checkpoint_best.pth")
 
         logging.info("Loading checkpoint from {}.".format(checkpoint_path))
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -649,6 +719,38 @@ class RunnerBase:
         self.start_epoch = checkpoint["epoch"] + 1
         print("resume the checkpoint")
         logging.info("Resume checkpoint from {}".format(url_or_filename))
+    
+    
+    def initialize_logger(self):
+        self.logger = MetricLogger(delimiter="  ")
+        self.logger.add_meter("train_loss", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_accuracy", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_f1_score", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_precision", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_recall", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_support", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_auc", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("train_balanced_accuracy", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        self.logger.add_meter("mw_train_recall", SmoothedValue(window_size=1, fmt="{value:.4f}"))
+        
+    @main_process
+    def initialize_mlflow(self, experiment_name, tags):
+        init_mlflow(
+            experiment_name=experiment_name,
+            tags=tags,
+        )
+        
+    @main_process
+    def end_mlflow(self):
+        end_mlflow_run()
+        
+    @main_process
+    def set_mlflow_step(self, step):
+        self.logger.set_mlflow_step(step)
+        
+    @main_process
+    def log_metrics_to_mlflow(self, step, global_avg=False):
+        self.logger.log_metrics_to_mlflow(step=step, log_global_avg=global_avg)
 
     @main_process
     def log_stats(self, stats, split_name):
@@ -661,5 +763,11 @@ class RunnerBase:
 
     @main_process
     def log_config(self):
-        with open(os.path.join(self.output_dir, "log.txt"), "a") as f:
+        output_path = os.path.join(self.output_dir, "log.txt")
+        with open(output_path, "a") as f:
             f.write(json.dumps(self.config.to_dict(), indent=4) + "\n")
+        return output_path
+            
+    @main_process
+    def log_config_to_mlflow(self, output_path):
+        self.logger.log_artifact_to_mlflow(output_path)

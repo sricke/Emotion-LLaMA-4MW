@@ -1,0 +1,9 @@
+datasets:
+  hcmw_caption:
+    data_type: images
+    use_weights: true
+    build_info:
+      image_path: /home/ricke/emotion-llama/feature_extract/factory/raw/mer
+      ann_path: /home/ricke/emotion-llama/LSTM/fold_ids_smaller_124.csv
+      # ann_path: /home/user/selected_face/face_emotion/MERR_coarse_grained.txt
+      # ann_path: /home/user/selected_face/face_emotion/MERR_fine_grained.txt   

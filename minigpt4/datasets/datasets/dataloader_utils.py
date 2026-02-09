@@ -23,10 +23,11 @@ class MultiIterLoader:
 
     def __init__(self, loaders, ratios=None):
         # assert all loaders has __next__ method
+
         for loader in loaders:
             assert hasattr(
                 loader, "__next__"
-            ), "Loader {} has no __next__ method.".format(loader)
+            ) or hasattr(loader, "next"), "Loader {} has no __next__ method.".format(loader)
 
         if ratios is None:
             ratios = [1.0] * len(loaders)
@@ -36,10 +37,17 @@ class MultiIterLoader:
 
         self.loaders = loaders
         self.ratios = ratios
+        self.current_loader_idx = 0
+        
+    def __len__(self):
+        return sum(len(loader) for loader in self.loaders)
 
     def __next__(self):
         # random sample from each loader by ratio
-        loader_idx = random.choices(range(len(self.loaders)), self.ratios, k=1)[0]
+        #loader_idx = random.choices(range(len(self.loaders)), self.ratios, k=1)[0]
+    
+        loader_idx = self.current_loader_idx
+        self.current_loader_idx = (self.current_loader_idx + 1) % len(self.loaders)
         return next(self.loaders[loader_idx])
 
 

@@ -2,7 +2,7 @@ import logging
 import random
 
 import torch
-from torch.cuda.amp import autocast as autocast
+from torch.amp import autocast as autocast
 import torch.nn as nn
 
 from minigpt4.common.registry import registry
@@ -97,6 +97,7 @@ class MiniGPTBase(BaseModel):
     ):
         super().__init__()
 
+        print("llama_model:", llama_model)
         self.llama_model, self.llama_tokenizer = self.init_llm(
             llama_model_path=llama_model,
             low_resource=low_resource,
@@ -120,7 +121,6 @@ class MiniGPTBase(BaseModel):
 
         self.attention = Attention(output_dim=6)
         self.CEloss = nn.CrossEntropyLoss()
-
     def vit_to_cpu(self):
         self.ln_vision.to("cpu")
         self.ln_vision.float()
@@ -344,23 +344,29 @@ class MiniGPTBase(BaseModel):
             part_targets = regress_token_ids.masked_fill(
                 regress_token_ids == self.llama_tokenizer.pad_token_id, -100
             )
+            
+        class_weights = torch.tensor(samples['class_weight'], device=self.device)
 
         regress_embeds = self.embed_tokens(regress_token_ids)
 
-        return cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets
+        return cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets, img_embeds, class_weights
 
-    def forward(self, samples, reduction='mean'):
+    def forward(self, samples, reduction='mean', return_input_embeds=False, class_weights=None, return_pred_texts=False):
         # import pdb
         # pdb.set_trace()
         # samples['image'].shape -> [1, 3, 448, 448]
 
         # prepare the embedding to condition and the embedding to regress
-        cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets = \
+        cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets, img_embeds, class_weights = \
             self.preparing_embedding(samples)
 
         # concat the embedding to condition and the embedding to regress
         inputs_embeds, attention_mask, input_lens = \
             self.concat_emb_input_output(cond_embeds, cond_atts, regress_embeds, regress_atts)
+    
+        # Store input embeddings (before BOS) for potential reuse in generation
+        input_embeds_for_gen = inputs_embeds.clone()  # Condition embeddings only (before BOS and ground truth)
+        input_attn_mask_for_gen = attention_mask.clone()
 
         # get bos token embedding
         bos = torch.ones_like(part_targets[:, :1]) * self.llama_tokenizer.bos_token_id
@@ -386,10 +392,23 @@ class MiniGPTBase(BaseModel):
                 labels=targets,
                 reduction=reduction,
                 output_hidden_states=True,
-                emotion = samples['emotion'],
+                emotion = samples['label'],
+                class_weights=class_weights,
+                tokenizer=self.llama_tokenizer,\
+                return_pred_texts=return_pred_texts,
             )
-        loss = outputs.loss
+            
+        if return_pred_texts:
+            loss = outputs[0]
+            pred_texts = outputs[1]
+            gt_texts = outputs[2]
+            
+        else:
+            loss = outputs.loss
+            
+            
 
+        
         # import pdb
         # pdb.set_trace()
 
@@ -411,10 +430,21 @@ class MiniGPTBase(BaseModel):
         #     emos_pred = self.attention(feature_list)
         #     emos_loss = self.CEloss(emos_pred, samples['emotion'])
 
-        emos_loss = loss
-        emos_pred = 0
+
+        
+        result = {"loss": loss, "answers": samples['answer']}
+        
+        if return_pred_texts:
+            result["pred_texts"] = pred_texts
+            result["gt_texts"] = gt_texts
+        # Return input embeddings for generation if requested
+        if return_input_embeds:
+            # Extract just the condition embeddings (before ground truth answer)
+            # This is what we need for generation
+            result["input_embeds"] = cond_embeds  # Condition embeddings only
+            result["input_attn_mask"] = cond_atts  # Condition attention mask only
             
-        return {"loss": loss, "emos_loss": emos_loss, "emos_pred": emos_pred, "emotion": samples['emotion']}
+        return result
 
     def embed_tokens(self, token_ids):
         if hasattr(self.llama_model.base_model, 'model'): ## lora wrapped model
@@ -438,36 +468,51 @@ class MiniGPTBase(BaseModel):
         temperature=1,
         do_sample=False,
         stop_words_ids=[2],
+        ground_truth_answers=None,
+        input_embeds=None,
+        input_attn_mask=None,
     ):
         '''
             function for generate test use
+            
+            Args:
+                ground_truth_answers: Optional list of ground truth answer strings to compute loss
+                input_embeds: Optional pre-computed input embeddings (from forward pass)
+                input_attn_mask: Optional pre-computed attention mask (from forward pass)
         '''
 
         stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(
             stops=[torch.tensor([i]).to(self.device) for i in stop_words_ids])])
 
-        # img_embeds, atts_img = self.encode_img(images.to(self.device))
-        img_embeds, atts_img = self.encode_img(images.to(self.device), video_features.to(self.device))
+        
+        if input_embeds is not None and input_attn_mask is not None:
+            # Use provided embeddings
+            embs = input_embeds
+            attn_mask = input_attn_mask
+            batch_size = embs.shape[0]
+            device = embs.device
+        else:
+            # Compute embeddings from scratch
+            img_embeds, atts_img = self.encode_img(images.to(self.device), video_features.to(self.device))
+            image_lists = [[image_emb[None]] for image_emb in img_embeds]
+            batch_embs = [self.get_context_emb(text, img_list) for text, img_list in zip(texts, image_lists)]
 
-        image_lists = [[image_emb[None]] for image_emb in img_embeds]
+            batch_size = len(batch_embs)
+            max_len = max([emb.shape[1] for emb in batch_embs])
+            emb_dim = batch_embs[0].shape[2]
+            dtype = batch_embs[0].dtype
+            device = batch_embs[0].device
 
-        batch_embs = [self.get_context_emb(text, img_list) for text, img_list in zip(texts, image_lists)]
+            embs = torch.zeros([batch_size, max_len, emb_dim], dtype=dtype, device=device)
+            attn_mask = torch.zeros([batch_size, max_len], dtype=torch.int, device=device)
+            for i, emb in enumerate(batch_embs):
+                emb_len = emb.shape[1]
+                embs[i, -emb_len:] = emb[0]
+                attn_mask[i, -emb_len:] = 1
 
-        batch_size = len(batch_embs)
-        max_len = max([emb.shape[1] for emb in batch_embs])
-        emb_dim = batch_embs[0].shape[2]
-        dtype = batch_embs[0].dtype
-        device = batch_embs[0].device
-
-        embs = torch.zeros([batch_size, max_len, emb_dim], dtype=dtype, device=device)
-        attn_mask = torch.zeros([batch_size, max_len], dtype=torch.int, device=device)
-        for i, emb in enumerate(batch_embs):
-            emb_len = emb.shape[1]
-            embs[i, -emb_len:] = emb[0]
-            attn_mask[i, -emb_len:] = 1
-
+        # Generate from input embeddings
         with self.maybe_autocast():
-            outputs = self.llama_model.generate(
+            generated_token_ids = self.llama_model.generate(
                 inputs_embeds=embs,
                 attention_mask=attn_mask,
                 max_new_tokens=max_new_tokens,
@@ -478,20 +523,12 @@ class MiniGPTBase(BaseModel):
                 min_length=min_length,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
-                # stopping_criteria=stopping_criteria,
+                stopping_criteria=stopping_criteria,
             )
 
-        # with self.maybe_autocast():
-        #     outputs = self.llama_model.generate(
-        #         inputs_embeds=embs,
-        #         attention_mask=attn_mask,
-        #         max_new_tokens=max_new_tokens,
-        #         num_beams=num_beams,
-        #         do_sample=do_sample,
-        #         # stopping_criteria=stopping_criteria,
-        #     )
+        # Decode generated tokens to text
         answers = []
-        for output_token in outputs:
+        for output_token in generated_token_ids:
             if output_token[0] == 0:
                 output_token = output_token[1:]
             output_texts = self.llama_tokenizer.decode(output_token, skip_special_tokens=True)
@@ -500,7 +537,8 @@ class MiniGPTBase(BaseModel):
             output_texts = output_texts.split(r'[/INST]')[-1].strip()
             answers.append(output_texts)
 
-        return answers
+        return {"answers": answers, "generated_token_ids": generated_token_ids}
+
 
     @torch.no_grad()
     def multi_select(self, images, texts, answers, num_cand=None):

@@ -2,7 +2,7 @@ import logging
 import random
 
 import torch
-from torch.cuda.amp import autocast as autocast
+from torch.amp import autocast as autocast
 import torch.nn as nn
 
 from minigpt4.common.registry import registry
@@ -105,11 +105,13 @@ class MiniGPTv2(MiniGPTBase):
             image_inputs_llama = self.llama_proj(image_embeds)    # [1, 256, 4096]
             video_features = video_features.to(device)   # [1, 3, 1024]
             video_features_split = torch.split(video_features, 1, dim=1)
-            output1 = self.feats_llama_proj1(video_features_split[0].squeeze(1))
-            output2 = self.feats_llama_proj2(video_features_split[1].squeeze(1))
-            output3 = self.feats_llama_proj3(video_features_split[2].squeeze(1))      
-            video_feats = torch.stack([output1, output2, output3], dim=1)
-            inputs_llama = torch.cat((image_inputs_llama, video_feats, cls_tk_feats), dim=1) # cls_tk_feats
+            output1 = self.feats_llama_proj1(video_features_split[0].squeeze(1)) # [1,1,4096]
+            output2 = self.feats_llama_proj2(video_features_split[1].squeeze(1)) # [1,1,4096] 
+            # output3 = self.feats_llama_proj3(video_features_split[2].squeeze(1)) no audio      
+            #video_feats = torch.stack([output1, output2, output3], dim=1)
+            
+            video_feats = torch.stack([output1, output2], dim=1) # [1, 2, 4096]
+            inputs_llama = torch.cat((image_inputs_llama, video_feats, cls_tk_feats), dim=1) # cls_tk_feats  [1, 256+2+1, 4096] -> [1, 259, 4096]
             # inputs_llama = torch.cat((image_inputs_llama, video_feats), dim=1)
 
             atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(image.device)    

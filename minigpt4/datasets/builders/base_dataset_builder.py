@@ -43,7 +43,7 @@ class BaseDatasetBuilder:
         self.vis_processors = {"train": BaseProcessor(), "eval": BaseProcessor()}
         self.text_processors = {"train": BaseProcessor(), "eval": BaseProcessor()}
 
-    def build_datasets(self):
+    def build_datasets(self, fold):
         # download, split, etc...
         # only called on 1 GPU/TPU in distributed
 
@@ -55,7 +55,7 @@ class BaseDatasetBuilder:
 
         # at this point, all the annotations and image/videos should be all downloaded to the specified locations.
         logging.info("Building datasets...")
-        datasets = self.build()  # dataset['train'/'val'/'test']
+        datasets = self.build(fold)  # dataset['train'/'val'/'test']
 
         return datasets
 
@@ -214,9 +214,13 @@ class BaseDatasetBuilder:
             if not os.path.isabs(vis_path):
                 # vis_path = os.path.join(utils.get_cache_path(), vis_path)
                 vis_path = utils.get_cache_path(vis_path)
+                
+            
 
             if not os.path.exists(vis_path):
                 warnings.warn("storage path {} does not exist.".format(vis_path))
+                
+            use_weights = self.config.get("use_weights", True)
 
             # create datasets
             dataset_cls = self.train_dataset_cls if is_train else self.eval_dataset_cls
@@ -225,6 +229,7 @@ class BaseDatasetBuilder:
                 text_processor=text_processor,
                 ann_paths=ann_paths,
                 vis_root=vis_path,
+                use_weights=use_weights,
             )
 
         return datasets

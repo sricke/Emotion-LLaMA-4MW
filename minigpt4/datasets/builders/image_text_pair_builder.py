@@ -7,6 +7,8 @@ from minigpt4.datasets.builders.base_dataset_builder import BaseDatasetBuilder
 
 from minigpt4.datasets.datasets.first_face import FeatureFaceDataset
 from minigpt4.datasets.datasets.mer2024 import MER2024Dataset
+from minigpt4.datasets.datasets.hcmw import HCMWDataset
+
 
 
 # FeatureFaceDataset
@@ -72,5 +74,37 @@ class MER2024nBuilder(BaseDatasetBuilder):
             ann_path=build_info.ann_path,
             vis_root=build_info.image_path,
         )
+
+        return datasets  
+    
+@registry.register_builder("hcmw_caption")
+class HCMWCaptionBuilder(BaseDatasetBuilder):
+    dataset_cls = HCMWDataset
+
+    DATASET_CONFIG_DICT = {"default": "configs/datasets/firstface/hcmw.yaml"}
+    
+    def _download_ann(self):
+        pass
+
+    def _download_vis(self):
+        pass
+
+    def build(self, fold):
+        self.build_processors()
+
+        build_info = self.config.build_info
+
+        datasets = dict()
+        
+        splits = ['train', 'eval']
+        for split in splits:
+            datasets[split] = self.dataset_cls(
+                vis_processor=self.vis_processors[split],
+                text_processor=self.text_processors[split],
+                ann_path=build_info.ann_path,
+                vis_root=build_info.image_path,
+                fold=fold,
+                is_train=split == 'train',
+            )
 
         return datasets  

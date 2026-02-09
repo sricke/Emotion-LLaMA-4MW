@@ -1,8 +1,12 @@
-# Python
+# Checkpoints
+checkpoints/
+
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -19,83 +23,30 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
+# PyTorch
+*.pth
+*.pt
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
 
-# PyCharm
-.idea/
-
-# VS Code
-.vscode/
-
-# macOS
-.DS_Store
-
-# Windows
-Thumbs.db
-desktop.ini
-
-# Model checkpoints and data (large files)
-checkpoints/*.pth
-checkpoints/*.pt
-checkpoints/save_checkpoint/*.pth
-checkpoints/save_checkpoint/*.pt
-!checkpoints/.gitkeep
-
-# Dataset files (too large for git)
-datasets/
-*.mp4
-*.avi
-*.mov
-examples/*.mp4
-!examples/.gitkeep
-
-# Logs
-*.log
-logs/
-wandb/
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-*.bak
-*~
-
-# Environment variables
+# Environment
 .env
-.env.local
-
-# Compiled source
-*.com
-*.class
-*.dll
-*.exe
-*.o
-*.so
-
-# Jekyll (from docs/)
-docs/_site/
-docs/.sass-cache/
-docs/.jekyll-cache/
-docs/.jekyll-metadata
-docs/.bundle/
-docs/vendor/
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
 # IDE
-*.swp
-*.swo
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
+*.swp
+*.swo
+*~
 
+# OS
+.DS_Store
+Thumbs.db

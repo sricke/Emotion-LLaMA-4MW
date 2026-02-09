@@ -1,0 +1,70 @@
+model:
+  arch: minigpt_v2
+  model_type: pretrain
+  max_txt_len: 1024
+  image_size: 448
+  end_sym: "</s>"
+  #llama_model: "/home/ricke/emotion-llama/rep/checkpoints/Llama-2-7b-chat-hf"
+  llama_model: "meta-llama/Llama-2-7b-chat-hf"
+  ckpt: "/home/ricke/emotion-llama/rep/checkpoints/save_checkpoint/emotion_llama.pth"
+
+
+  use_grad_checkpoint: True
+  chat_template: True
+  lora_r: 64
+  lora_alpha: 16
+
+  low_resource: False
+
+
+datasets:    
+  dataset_name: hcmw_caption
+  config:
+    batch_size: 2
+    vis_processor:
+      train:
+        name: "blip2_image_train"
+        image_size: 448
+      eval:
+        name: "blip2_image_eval"
+        image_size: 448
+    text_processor:
+      train:
+        name: "blip_caption"
+      eval:
+        name: "blip_caption"
+
+run:
+  task: image_text_pretrain
+  # optimizer
+  lr_sched: "linear_warmup_cosine_lr"
+
+  init_lr: 1e-6
+  min_lr: 1e-6
+  warmup_lr: 1e-6
+
+  weight_decay: 0.05
+  max_epoch: 50
+  num_workers: 6
+  iters_per_epoch: 100
+
+
+  warmup_steps: 1000
+
+  seed: 42
+  output_dir: "/home/ricke/emotion-llama/rep/checkpoints/MW-tuning"
+
+  amp: True
+  resume_ckpt_path: null
+
+  evaluate: False 
+  train_splits: ["train"]
+  valid_splits: ["eval"]
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: False
+
+  wandb_log: True
+  job_name: MW-tuning

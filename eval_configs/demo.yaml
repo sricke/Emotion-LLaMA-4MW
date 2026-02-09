@@ -6,8 +6,8 @@ model:
   low_resource: True
   # low_resource: False 
   prompt_template: '[INST] {} [/INST]'
-
-  ckpt: "/home/user/project/Emotion-LLaMA/checkpoints/save_checkpoint/Emoation_LLaMA.pth"
+  llama_model: "meta-llama/Llama-2-7b-chat-hf"
+  ckpt: "/home/ricke/emotion-llama/rep/checkpoints/save_checkpoint/emotion_llama.pth"
 
   lora_r: 64
   lora_alpha: 16

@@ -6,6 +6,8 @@ from PIL import Image
 import cv2
 from moviepy.editor import VideoFileClip
 import soundfile as sf
+import numpy as np
+from moviepy.audio.AudioClip import AudioClip
 
 
 import torch
@@ -160,8 +162,14 @@ def get_first_frame(video_path):
 def extract_audio_from_video(video_path):
     video = VideoFileClip(video_path)
     audio = video.audio
+    
+    if audio is None:
+        print(f"Warning: No audio track found in video file: {video_path}")
+        # Create a silent audio clip with proper format
+        return np.zeros((int(16000*video.duration),), dtype=np.float32), 16000
+    
     # audio.write_audiofile("audio.wav")
-
+  
     audio_path = "audio.wav"
     audio.write_audiofile(audio_path, fps=16000, codec='pcm_s16le', ffmpeg_params=['-ac', '1'])
     samples, sr = sf.read(audio_path)
@@ -259,8 +267,9 @@ class Chat:
 
             samples, sr = extract_audio_from_video(video_path)
             # print("samples:", samples)
-
-            model_file = "checkpoints/transformer/chinese-hubert-large"
+        
+            model_file = "TencentGameMate/chinese-hubert-large"
+  
             feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_file)
             input_values = feature_extractor(samples, sampling_rate=sr, return_tensors="pt").input_values
             # print("input_values:", input_values)

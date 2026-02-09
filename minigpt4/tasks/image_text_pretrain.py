@@ -14,6 +14,6 @@ class ImageTextPretrainTask(BaseTask):
     def __init__(self):
         super().__init__()
 
-    def evaluation(self, model, data_loader, cuda_enabled=True):
+    """def evaluation(self, model, data_loader, cuda_enabled=True):
         print("-----evaluation----")
-        # pass
+        # pass"""

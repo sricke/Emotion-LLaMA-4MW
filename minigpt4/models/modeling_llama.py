@@ -9,7 +9,7 @@ from transformers.utils import add_start_docstrings_to_model_forward, replace_re
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING, _CONFIG_FOR_DOC
 from transformers.models.llama.modeling_llama import LlamaForCausalLM as LlamaForCausalLMOrig
-
+from transformers import PreTrainedTokenizer
 
 class LlamaForCausalLM(LlamaForCausalLMOrig):
 
@@ -29,6 +29,9 @@ class LlamaForCausalLM(LlamaForCausalLMOrig):
         emotion: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
         reduction: Optional[str] = "mean",
+        class_weights: Optional[torch.Tensor] = None,
+        tokenizer: Optional[PreTrainedTokenizer] = None,
+        return_pred_texts: Optional[bool] = False,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -91,21 +94,67 @@ class LlamaForCausalLM(LlamaForCausalLMOrig):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = CrossEntropyLoss(reduction=reduction)
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
 
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            
+            batch_size = logits.size(0)
+            seq_len = shift_logits.size(0) // batch_size
+            
+            
+            # Each token in a sample gets the weight of that sample's class
+            # Expand weights: [batch_size] -> [batch_size * seq_len]
+            # Each sample's tokens get the same weight
+            token_weights = class_weights.unsqueeze(1).expand(batch_size, seq_len).contiguous()
+            token_weights = token_weights.view(-1)  # Flatten to [batch_size * seq_len]
+            
+            # Only weight non-ignored tokens (labels != -100)
+            # Set weight to 0 for ignored tokens so they don't contribute to loss
+            ignore_mask = (shift_labels == -100)
+            token_weights = token_weights * (~ignore_mask).float()
+            
+            pred_texts = []
+            gt_texts = []
+            # Decode predictions
+            if tokenizer is not None:
+                # Get predicted token IDs (before shifting, to match original sequence)
+                pred_token_ids = torch.argmax(logits, dim=-1)  # [batch_size, seq_len]
+
+                # Decode only the answer tokens (where labels != -100)
+                for batch_idx in range(batch_size):
+                    answer_mask = (labels[batch_idx] != -100)
+                    # Find answer token positions
+                    # Get predicted and ground truth tokens for answer portion
+                    pred_answer_tokens = pred_token_ids[batch_idx][answer_mask]
+                    gt_answer_tokens = labels[batch_idx][answer_mask]
+                    
+                    # Filter out -100 before decoding
+                    pred_token_list = pred_answer_tokens.cpu().tolist()
+                    gt_token_list = gt_answer_tokens.cpu().tolist()
+                    pred_token_list = [token for token in pred_token_list if token != -100]
+                    gt_token_list = [token for token in gt_token_list if token != -100]
+                    pred_text = tokenizer.decode(pred_token_list, skip_special_tokens=True)
+                    gt_text = tokenizer.decode(gt_token_list, skip_special_tokens=True)
+                    #print(f"Batch {batch_idx} - Predicted: '{pred_text}' | Ground Truth: '{gt_text}'")
+                    pred_texts.append(pred_text)
+                    gt_texts.append(gt_text)
+           
+            # Use weighted CrossEntropyLoss
+            loss_fct = CrossEntropyLoss(reduction='none', ignore_index=-100)
+            loss_per_token = loss_fct(shift_logits, shift_labels)
+            # Apply weights
+            loss = (loss_per_token * token_weights).sum() / token_weights.sum()
+
+            
             if reduction == "none":
                 loss = loss.view(logits.size(0), -1).mean(1)
 
     
 
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
+        if return_pred_texts:
+            return (loss, pred_texts, gt_texts)
 
         return CausalLMOutputWithPast(
             loss=loss,
