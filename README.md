@@ -1,4 +1,4 @@
-# Emotion-LLaMA: Multimodal Emotion Recognition and Reasoning with Instruction Tuning  
+# Emotion-LLaMA: Multimodal Emotion Recognition and Mind Wandering Detection
 
 This is a fork of the [Emotion-LLaMA GitHub repository](https://github.com/ZebangCheng/Emotion-LLaMA), used for experimenting with Emotion-LLaMA as an encoder for mind wandering detection.
 
