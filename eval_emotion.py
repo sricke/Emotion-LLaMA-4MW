@@ -221,10 +221,13 @@ if 'hcmw_caption' in args.dataset:
     img_path = cfg.evaluation_datasets_cfg["hcmw_caption"]["img_path"]
     batch_size = cfg.evaluation_datasets_cfg["hcmw_caption"]["batch_size"]
     max_new_tokens = cfg.evaluation_datasets_cfg["hcmw_caption"]["max_new_tokens"]
+    # Get fold from config if available, otherwise default to 0 for evaluation
+    fold = cfg.evaluation_datasets_cfg["hcmw_caption"].get("fold", 0)
     print(eval_file_path)
     print(img_path)
     print(batch_size)
     print(max_new_tokens)
+    print(f"Using fold: {fold}")
 
     data = HCMWDataset(vis_processor, text_processor, img_path, eval_file_path)
     eval_dataloader = DataLoader(data, batch_size=batch_size, shuffle=False)
@@ -262,9 +265,16 @@ if 'hcmw_caption' in args.dataset:
         image_projected_features_list.append(image_projected_features)
         llama_features_list.append(llama_features)
         names_list.extend(batch['image_id'])
+        
+    save_dir = "/mnt/external_drive/Emotion-LLaMA/Features/Preprocessed_features/blur_0.0"
+    
+    os.makedirs(save_dir, exist_ok=True)
+    for i, name in enumerate(names_list):
+        breakpoint()
+        np.save(os.path.join(save_dir, f"{name}.npy"), llama_features_list)
 
    
-    facemae_projected_features_list = np.concatenate(facemae_projected_features_list, axis=0)
+    """facemae_projected_features_list = np.concatenate(facemae_projected_features_list, axis=0)
     videomae_projected_features_list = np.concatenate(videomae_projected_features_list, axis=0)
     image_projected_features_list = np.concatenate(image_projected_features_list, axis=0)
     llama_features_list = np.concatenate(llama_features_list, axis=0)
@@ -279,7 +289,7 @@ if 'hcmw_caption' in args.dataset:
 
     with open(os.path.join(save_dir, "names_embeddings.txt"), "w") as f:
         for name in names_list:
-            f.write(f"{name}\n")
+            f.write(f"{name}\n")"""
 
 # torchrun  --nproc_per_node 1 eval_emotion.py --cfg-path eval_configs/eval_emotion.yaml --dataset feature_face_caption
 # torchrun  --nproc_per_node 1 eval_emotion.py --cfg-path eval_configs/eval_emotion.yaml --dataset mer2024_caption

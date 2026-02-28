@@ -97,7 +97,6 @@ class Config:
         
         dataset_name = datasets.get("dataset_name", None)
 
-        print(dataset_name)
         builder_cls = registry.get_builder_class(dataset_name)
 
         dataset_config_type = datasets.get("type", "default")

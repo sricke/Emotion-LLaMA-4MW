@@ -1,0 +1,30 @@
+model:
+  arch: minigpt_v2
+  model_type: pretrain
+  max_txt_len: 500
+  end_sym: "</s>"
+  low_resource: False
+  prompt_template: '[INST] {} [/INST]'
+  llama_model: "meta-llama/Llama-2-7b-chat-hf"
+  ckpt: "/home/ricke/Emotion-LLaMA-4MW/checkpoints/save_checkpoint/emotion_llama.pth"
+  lora_r: 64
+  lora_alpha: 16
+
+datasets:
+  dataset_name: "hcmw_caption"
+  type: "default"
+  config:
+    batch_size: 1
+    vis_processor:
+      train:
+        name: "blip2_image_train"
+        image_size: 448
+    text_processor:
+      train:
+        name: "blip_caption"
+    sample_ratio: 30
+
+run:
+  task: image_text_pretrain
+  name: extract_embeddings
+  save_path: /home/ricke/Emotion-LLaMA-4MW/results
