@@ -107,6 +107,7 @@ class MiniGPTv2(MiniGPTBase):
             video_features_split = torch.split(video_features, 1, dim=1)
             output1 = self.feats_llama_proj1(video_features_split[0].squeeze(1)) # [1,1,4096]
             output2 = self.feats_llama_proj2(video_features_split[1].squeeze(1)) # [1,1,4096] 
+            
             # output3 = self.feats_llama_proj3(video_features_split[2].squeeze(1)) no audio      
             #video_feats = torch.stack([output1, output2, output3], dim=1)
             

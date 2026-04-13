@@ -25,7 +25,7 @@ from maeVideo import models_vit
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run.')
-    parser.add_argument('--feature_level', type=str, default='FRAME', help='feature level [FRAME or UTTERANCE]')
+    parser.add_argument('--feature_level', type=str, default='FRAME', help='feature level [FRAME or CLIP]')
     parser.add_argument('--pretrain_model', type=str, default='maeVideo_ckp199', help='pth of pretrain MAE model')
     parser.add_argument('--feature_name', type=str, default='maeVideo_ckp199', help='pth of pretrain MAE model')
     parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
@@ -36,15 +36,19 @@ if __name__ == '__main__':
     parser.add_argument('--cls_token', action='store_false', dest='global_pool',
                         help='Use class token instead of global pool for classification')
     parser.add_argument('--batch_size', default=512, type=int)
+    parser.add_argument('--max_frames', default=16, type=int, help='max frames to extract')
 
     params = parser.parse_args()
 
     print(f'==> Extracting maeVideo embedding...')
     face_dir = '/mnt/external_drive/Affectnet/Features/Preprocessed_features/blur_0.0'
-    save_dir = "/mnt/external_drive/MAEVideo/Features/Preprocessed_features/blur_0.0"
+    if params.feature_level == 'CLIP':
+        save_dir = f"/mnt/external_drive/MAEVideo/Features/Preprocessed_features_{params.max_frames}_pool/blur_0.0"
+    else:
+        save_dir = f"/mnt/external_drive/MAEVideo/Features/Preprocessed_features_frame/blur_0.0"
     if not os.path.exists(save_dir): os.makedirs(save_dir)
 
-    MAX_FRAMES = 64
+    MAX_FRAMES = params.max_frames
 
     # load model
     model = models_vit.__dict__[params.model](
@@ -110,14 +114,15 @@ if __name__ == '__main__':
             elif len(embeddings.shape) == 3:
                 embeddings = np.mean(embeddings, axis=0)
             np.save(npy_file, embeddings)
-            
-        else:
+        elif params.feature_level == 'CLIP': #pooling over the time dimension
             embeddings = np.array(embeddings).squeeze()
             if len(embeddings) == 0:
                 embeddings = np.zeros((EMBEDDING_DIM,))
             elif len(embeddings.shape) == 2:
                 embeddings = np.mean(embeddings, axis=0)
             np.save(npy_file, embeddings)
+        else:
+            raise ValueError(f"Invalid feature level: {params.feature_level}")
 
 # EMER
 # python -u extract_maeVideo_embedding.py    --feature_level='UTTERANCE' --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo_ckp199'

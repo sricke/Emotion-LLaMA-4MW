@@ -512,7 +512,7 @@ class MiniGPTBase(BaseModel):
 
         # Generate from input embeddings
         with self.maybe_autocast():
-            generated_token_ids = self.llama_model.generate(
+            outputs = self.llama_model.generate(
                 inputs_embeds=embs,
                 attention_mask=attn_mask,
                 max_new_tokens=max_new_tokens,
@@ -524,7 +524,12 @@ class MiniGPTBase(BaseModel):
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
                 stopping_criteria=stopping_criteria,
+                output_scores=True,              
+                return_dict_in_generate=True,  
             )
+        
+        generated_token_ids = outputs.sequences  # was just the return value before
+        scores = outputs.scores  # tuple of (vocab_size,) tensors, one per generation step
 
         # Decode generated tokens to text
         answers = []
